@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::config;
+use crate::config::Config;
 
 #[derive(Serialize)]
 struct ChatRequest {
@@ -17,6 +17,7 @@ struct Message {
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<Choice>,
+    usage: Option<Usage>,
 }
 
 #[derive(Deserialize)]
@@ -29,15 +30,29 @@ struct MessageContent {
     content: String,
 }
 
+#[derive(Deserialize)]
+pub struct Usage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
+pub struct CommitResult {
+    pub message: String,
+    pub usage: Option<Usage>,
+}
+
 pub async fn generate_commit_message(
     diff: &str,
     prompt: &str,
-    api_key: &str,
-) -> anyhow::Result<String> {
+    config: &Config,
+) -> anyhow::Result<CommitResult> {
+    let (_, model_name) = config.ai_commit.model.split_once('/').unwrap();
+
     let client = reqwest::Client::new();
 
     let request = ChatRequest {
-        model: config::MODEL.to_string(),
+        model: model_name.to_string(),
         messages: vec![
             Message {
                 role: "system".to_string(),
@@ -50,7 +65,9 @@ pub async fn generate_commit_message(
         ],
     };
 
-    let url = format!("{}/v1/chat/completions", config::API_BASE_URL);
+    let url = format!("{}/v1/chat/completions", config.provider.api_base_url);
+
+    let api_key = crate::config::resolve_api_key(config)?;
 
     let response = client
         .post(&url)
@@ -60,13 +77,14 @@ pub async fn generate_commit_message(
         .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
-        .map_err(|e| anyhow::anyhow!("调用 DeepSeek API 失败: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("调用 API ({}) 失败: {}", config.provider.api_base_url, e))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         return Err(anyhow::anyhow!(
-            "DeepSeek API 返回错误 ({}): {}",
+            "API ({}) 返回错误 ({}): {}",
+            config.provider.api_base_url,
             status,
             body
         ));
@@ -75,16 +93,19 @@ pub async fn generate_commit_message(
     let chat_response: ChatResponse = response
         .json()
         .await
-        .map_err(|e| anyhow::anyhow!("解析 DeepSeek API 响应失败: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("解析 API 响应失败: {}", e))?;
 
     let message = chat_response
         .choices
         .into_iter()
         .next()
         .map(|c| c.message.content.trim().to_string())
-        .ok_or_else(|| anyhow::anyhow!("DeepSeek API 返回空响应"))?;
+        .ok_or_else(|| anyhow::anyhow!("API 返回空响应"))?;
 
-    Ok(message)
+    Ok(CommitResult {
+        message,
+        usage: chat_response.usage,
+    })
 }
 
 #[cfg(test)]
@@ -119,21 +140,31 @@ mod tests {
             "choices": [
                 {
                     "message": {
-                        "content": "feat: 添加新功能"
+                        "content": "feat: \u6dfb\u52a0\u65b0\u529f\u80fd"
                     }
                 }
-            ]
+            ],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 10,
+                "total_tokens": 110
+            }
         }"#;
 
         let response: ChatResponse = serde_json::from_str(json).unwrap();
         assert_eq!(response.choices.len(), 1);
         assert_eq!(response.choices[0].message.content, "feat: 添加新功能");
+        let usage = response.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 10);
+        assert_eq!(usage.total_tokens, 110);
     }
 
     #[test]
     fn test_chat_response_empty_choices() {
-        let json = r#"{"choices": []}"#;
+        let json = r#"{"choices": [], "usage": null}"#;
         let response: ChatResponse = serde_json::from_str(json).unwrap();
         assert!(response.choices.is_empty());
+        assert!(response.usage.is_none());
     }
 }

@@ -1,5 +1,7 @@
 use std::io::{self, Write};
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub enum UserAction {
     Commit,
     Regenerate,
@@ -9,7 +11,7 @@ pub enum UserAction {
 pub fn show_message(message: &str) {
     println!();
     println!("\x1b[1;36m══════════════════════════════════════════\x1b[0m");
-    println!("\x1b[1;33m  AI 生成的提交信息:\x1b[0m");
+    println!("\x1b[1;33m  bingit v{} — AI 生成的提交信息:\x1b[0m", VERSION);
     println!("\x1b[1;36m══════════════════════════════════════════\x1b[0m");
     println!();
     println!("\x1b[1;32m  {}\x1b[0m", message);
