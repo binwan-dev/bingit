@@ -31,6 +31,15 @@ async fn run_ai_commit() {
         exit(1);
     }
 
+    let (provider_name, _) = cfg.ai_commit.model.split_once('/').unwrap();
+    let provider = match config::find_provider(&cfg, provider_name) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{}", e);
+            exit(1);
+        }
+    };
+
     let prompt = config::load_prompt(&cfg);
 
     if !git::is_git_repo() {
@@ -52,7 +61,7 @@ async fn run_ai_commit() {
     }
 
     loop {
-        let result = match ai::generate_commit_message(&diff, &prompt, &cfg).await {
+        let result = match ai::generate_commit_message(&diff, &prompt, &cfg, provider).await {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("{}", e);

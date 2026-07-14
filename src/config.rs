@@ -23,7 +23,7 @@ pub struct AiCommitConfig {
 pub struct Config {
     #[serde(rename = "AICommit")]
     pub ai_commit: AiCommitConfig,
-    pub provider: ProviderConfig,
+    pub providers: Vec<ProviderConfig>,
     #[serde(rename = "TokenLogging")]
     pub token_logging: bool,
     #[serde(rename = "LogPath")]
@@ -80,12 +80,23 @@ fn default_config() -> Config {
             prompt_path: default_prompt_path(),
             model: "deepseek/deepseek-v4-flash".to_string(),
         },
-        provider: ProviderConfig {
-            name: "deepseek".to_string(),
-            api_key: String::new(),
-            api_base_url: "https://api.deepseek.com".to_string(),
-            models: vec!["deepseek-v4-flash".to_string()],
-        },
+        providers: vec![
+            ProviderConfig {
+                name: "deepseek".to_string(),
+                api_key: String::new(),
+                api_base_url: "https://api.deepseek.com".to_string(),
+                models: vec!["deepseek-v4-flash".to_string()],
+            },
+            ProviderConfig {
+                name: "volcengine".to_string(),
+                api_key: String::new(),
+                api_base_url: "https://ark.cn-beijing.volces.com/api/v3".to_string(),
+                models: vec![
+                    "deepseek-v4-pro".to_string(),
+                    "deepseek-v4-flash".to_string(),
+                ],
+            },
+        ],
         token_logging: false,
         log_path: default_log_path(),
     }
@@ -132,15 +143,9 @@ pub fn validate_config(config: &Config) -> anyhow::Result<()> {
         ));
     }
 
-    if config.provider.name != provider_name {
-        return Err(anyhow::anyhow!(
-            "AICommit.Model 中的 provider '{}' 与配置的 provider.name '{}' 不匹配",
-            provider_name,
-            config.provider.name
-        ));
-    }
+    let provider = find_provider(config, provider_name)?;
 
-    if !config.provider.models.contains(&model_name.to_string()) {
+    if !provider.models.contains(&model_name.to_string()) {
         return Err(anyhow::anyhow!(
             "模型 '{}' 不在 provider '{}' 的 models 列表中",
             model_name,
@@ -151,9 +156,17 @@ pub fn validate_config(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn resolve_api_key(config: &Config) -> anyhow::Result<String> {
-    if !config.provider.api_key.is_empty() {
-        return Ok(config.provider.api_key.clone());
+pub fn find_provider<'a>(config: &'a Config, name: &str) -> anyhow::Result<&'a ProviderConfig> {
+    config
+        .providers
+        .iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| anyhow::anyhow!("未找到 provider '{}'", name))
+}
+
+pub fn resolve_api_key(provider: &ProviderConfig) -> anyhow::Result<String> {
+    if !provider.api_key.is_empty() {
+        return Ok(provider.api_key.clone());
     }
     std::env::var("BINGIT_AI_KEY")
         .map_err(|_| anyhow::anyhow!("请设置 BINGIT_AI_KEY 环境变量或在配置文件中填写 provider.ApiKey"))
@@ -184,8 +197,35 @@ mod tests {
     }
 
     #[test]
+    fn test_default_config_has_two_providers() {
+        let config = default_config();
+        assert_eq!(config.providers.len(), 2);
+        assert_eq!(config.providers[0].name, "deepseek");
+        assert_eq!(config.providers[1].name, "volcengine");
+    }
+
+    #[test]
+    fn test_find_provider() {
+        let config = default_config();
+        let provider = find_provider(&config, "deepseek").unwrap();
+        assert_eq!(provider.api_base_url, "https://api.deepseek.com");
+
+        let provider = find_provider(&config, "volcengine").unwrap();
+        assert_eq!(provider.api_base_url, "https://ark.cn-beijing.volces.com/api/v3");
+
+        assert!(find_provider(&config, "unknown").is_err());
+    }
+
+    #[test]
     fn test_validate_config_valid() {
         let config = default_config();
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_volcengine() {
+        let mut config = default_config();
+        config.ai_commit.model = "volcengine/deepseek-v4-pro".to_string();
         assert!(validate_config(&config).is_ok());
     }
 
@@ -198,11 +238,11 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_config_provider_mismatch() {
+    fn test_validate_config_provider_not_found() {
         let mut config = default_config();
         config.ai_commit.model = "openai/gpt-4".to_string();
         let err = validate_config(&config).unwrap_err();
-        assert!(err.to_string().contains("不匹配"));
+        assert!(err.to_string().contains("未找到"));
     }
 
     #[test]
@@ -214,19 +254,29 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_config_volcengine_model_not_in_list() {
+        let mut config = default_config();
+        config.ai_commit.model = "volcengine/gpt-4".to_string();
+        let err = validate_config(&config).unwrap_err();
+        assert!(err.to_string().contains("不在"));
+    }
+
+    #[test]
     fn test_resolve_api_key() {
         let config = default_config();
+        let provider = find_provider(&config, "deepseek").unwrap();
 
         unsafe { std::env::remove_var("BINGIT_AI_KEY"); }
-        assert!(resolve_api_key(&config).is_err());
+        assert!(resolve_api_key(provider).is_err());
 
         unsafe { std::env::set_var("BINGIT_AI_KEY", "sk-from-env"); }
-        assert_eq!(resolve_api_key(&config).unwrap(), "sk-from-env");
+        assert_eq!(resolve_api_key(provider).unwrap(), "sk-from-env");
         unsafe { std::env::remove_var("BINGIT_AI_KEY"); }
 
         let mut config = default_config();
-        config.provider.api_key = "sk-from-config".to_string();
-        assert_eq!(resolve_api_key(&config).unwrap(), "sk-from-config");
+        config.providers[0].api_key = "sk-from-config".to_string();
+        let provider = find_provider(&config, "deepseek").unwrap();
+        assert_eq!(resolve_api_key(provider).unwrap(), "sk-from-config");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
+use crate::config::{Config, ProviderConfig};
 
 #[derive(Serialize)]
 struct ChatRequest {
@@ -46,6 +46,7 @@ pub async fn generate_commit_message(
     diff: &str,
     prompt: &str,
     config: &Config,
+    provider: &ProviderConfig,
 ) -> anyhow::Result<CommitResult> {
     let (_, model_name) = config.ai_commit.model.split_once('/').unwrap();
 
@@ -65,9 +66,9 @@ pub async fn generate_commit_message(
         ],
     };
 
-    let url = format!("{}/v1/chat/completions", config.provider.api_base_url);
+    let url = format!("{}/v1/chat/completions", provider.api_base_url);
 
-    let api_key = crate::config::resolve_api_key(config)?;
+    let api_key = crate::config::resolve_api_key(provider)?;
 
     let response = client
         .post(&url)
@@ -77,14 +78,14 @@ pub async fn generate_commit_message(
         .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
-        .map_err(|e| anyhow::anyhow!("调用 API ({}) 失败: {}", config.provider.api_base_url, e))?;
+        .map_err(|e| anyhow::anyhow!("调用 API ({}) 失败: {}", provider.api_base_url, e))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         return Err(anyhow::anyhow!(
             "API ({}) 返回错误 ({}): {}",
-            config.provider.api_base_url,
+            provider.api_base_url,
             status,
             body
         ));
